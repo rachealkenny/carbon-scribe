@@ -1045,3 +1045,38 @@ model CreditTransfer {
   @@index([companyId])
   @@index([status])
 }
+
+// ==========================================
+// Ownership History & Audit Trail
+// ==========================================
+
+model CreditOwnershipHistory {
+  id              String   @id @default(cuid())
+  tokenId         Int
+  companyId       String?
+  previousOwner   String
+  newOwner        String
+  eventType       String   // MINT, TRANSFER, RETIREMENT
+  transactionHash String
+  blockNumber     Int
+  ledgerSequence  Int
+  metadata        Json?    // Additional event data
+  timestamp       DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  @@index([tokenId])
+  @@index([newOwner])
+  @@index([transactionHash])
+  @@index([timestamp])
+  @@map("credit_ownership_history")
+}
+
+model CreditCurrentOwner {
+  id              String   @id @default(cuid())
+  tokenId         Int      @unique
+  owner           String
+  lastUpdated     DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  @@map("credit_current_owners")
+}
