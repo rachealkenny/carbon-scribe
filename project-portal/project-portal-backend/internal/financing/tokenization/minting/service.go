@@ -42,19 +42,21 @@ type Service interface {
 type service struct {
 	db             *gorm.DB
 	contractClient CarbonAssetContractClient
+	capValidator   *CapValidator
 }
 
 type CarbonAssetContractClient interface {
 	Mint(ctx context.Context, owner string, metadata CarbonAssetMetadata) (tokenID int, txHash string, err error)
 }
 
-func NewService(db *gorm.DB, client CarbonAssetContractClient) Service {
+func NewService(db *gorm.DB, client CarbonAssetContractClient, capValidator *CapValidator) Service {
 	if client == nil {
 		client = NewContractClientFromEnv()
 	}
 	return &service{
 		db:             db,
 		contractClient: client,
+		capValidator:   capValidator,
 	}
 }
 
@@ -79,6 +81,7 @@ func (s *service) MintProjectCredits(ctx context.Context, projectID uuid.UUID, v
 		Name               string
 		MethodologyTokenID int
 		VintageYear        int
+		CarbonCredits      int
 	}
 	if err := s.db.WithContext(ctx).Table("projects").Where("id = ?", projectID).First(&project).Error; err != nil {
 		job.Status = "failed"
@@ -89,12 +92,12 @@ func (s *service) MintProjectCredits(ctx context.Context, projectID uuid.UUID, v
 
 	// Async minting or immediate? Requirement says "handle failures with retry logic".
 	// For now we'll do it synchronously here, but in a real app this would be a background task.
-	go s.processMintingJob(context.Background(), job, project.MethodologyTokenID)
+	go s.processMintingJob(context.Background(), job, project.MethodologyTokenID, project.VintageYear, project.CarbonCredits)
 
 	return job, nil
 }
 
-func (s *service) processMintingJob(ctx context.Context, job *MintingJob, methodologyID int) {
+func (s *service) processMintingJob(ctx context.Context, job *MintingJob, methodologyID int, vintageYear int, projectCredits int) {
 	job.Status = "processing"
 	s.db.Save(job)
 
@@ -102,7 +105,16 @@ func (s *service) processMintingJob(ctx context.Context, job *MintingJob, method
 	// Using a placeholder address for demonstration
 	ownerAddress := os.Getenv("CARBON_ASSET_DEFAULT_PROJECT_OWNER")
 	if ownerAddress == "" {
-		ownerAddress = "G..." // Replace with actual default or project owner from DB
+		ownerAddress = os.Getenv("CARBON_ASSET_AUTHORITY_PUBLIC_KEY")
+	}
+	if ownerAddress == "" {
+		ownerAddress = os.Getenv("STELLAR_PUBLIC_KEY")
+	}
+	if strings.TrimSpace(ownerAddress) == "" {
+		job.Status = "failed"
+		job.Error = "missing CARBON_ASSET_DEFAULT_PROJECT_OWNER or CARBON_ASSET_AUTHORITY_PUBLIC_KEY"
+		s.db.Save(job)
+		return
 	}
 
 	// Calculate a simple GeoHash if not available (Placeholder)
@@ -111,24 +123,57 @@ func (s *service) processMintingJob(ctx context.Context, job *MintingJob, method
 
 	metadata := CarbonAssetMetadata{
 		ProjectID:     job.ProjectID.String(),
-		VintageYear:   2024, // Placeholder, should come from project or credit details
+		VintageYear:   2024,
 		MethodologyID: uint32(methodologyID),
 		GeoHash:       geoHash,
+	}
+	if vintageYear > 0 {
+		metadata.VintageYear = uint64(vintageYear)
+	}
+
+	requestedAmount := int64(1)
+	if projectCredits > 0 {
+		requestedAmount = int64(projectCredits)
+	}
+	if requestedAmount <= 0 {
+		requestedAmount = 1
+	}
+
+	var vintageYearPtr *int
+	if metadata.VintageYear > 0 {
+		v := int(metadata.VintageYear)
+		vintageYearPtr = &v
 	}
 
 	// Retry logic
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		tokenID, txHash, err := s.contractClient.Mint(ctx, ownerAddress, metadata)
+		var mintedTokenID int
+		var mintedTxHash string
+		mintFn := func(mintCtx context.Context) error {
+			tokenID, txHash, err := s.contractClient.Mint(mintCtx, ownerAddress, metadata)
+			if err != nil {
+				return err
+			}
+			mintedTokenID = tokenID
+			mintedTxHash = txHash
+			return nil
+		}
+
+		err := s.capValidator.ValidateAndExecute(ctx, CapValidationInput{
+			MethodologyTokenID: methodologyID,
+			ProjectID:          job.ProjectID,
+			VintageYear:        vintageYearPtr,
+			RequestedAmount:    requestedAmount,
+		}, mintFn)
 		if err == nil {
 			job.Status = "completed"
-			job.TxHash = txHash
+			job.TxHash = mintedTxHash
 			s.db.Save(job)
 
-			// Record the minted token
 			mintedToken := &MintedToken{
 				JobID:         job.ID,
-				TokenID:       tokenID,
+				TokenID:       mintedTokenID,
 				ProjectID:     job.ProjectID,
 				VintageYear:   int(metadata.VintageYear),
 				MethodologyID: int(metadata.MethodologyID),
@@ -184,7 +229,10 @@ func NewContractClientFromEnv() CarbonAssetContractClient {
 		return &mockContractClient{}
 	}
 
-	authority, _ := keypair.ParseFull(seed)
+	authority, err := keypair.ParseFull(seed)
+	if err != nil {
+		return &mockContractClient{}
+	}
 	rpcURL := os.Getenv("STELLAR_RPC_URL")
 	if rpcURL == "" {
 		rpcURL = defaultSorobanRPCURL
@@ -204,16 +252,29 @@ func NewContractClientFromEnv() CarbonAssetContractClient {
 }
 
 func (c *realContractClient) Mint(ctx context.Context, owner string, metadata CarbonAssetMetadata) (int, string, error) {
+	if strings.TrimSpace(owner) == "" {
+		owner = c.authority.Address()
+	}
+
 	// 1. Load Admin Account
 	account, err := c.rpc.LoadAccount(ctx, c.authority.Address())
 	if err != nil {
-		return 0, "", err
+		return 0, "", fmt.Errorf("load authority account: %w", err)
 	}
 
 	// 2. Prepare Arguments
-	callerVal, _ := scAddressVal(c.authority.Address())
-	ownerVal, _ := scAddressVal(owner)
-	metaVal, _ := buildMetadataVal(metadata)
+	callerVal, err := scAddressVal(c.authority.Address())
+	if err != nil {
+		return 0, "", err
+	}
+	ownerVal, err := scAddressVal(owner)
+	if err != nil {
+		return 0, "", err
+	}
+	metaVal, err := buildMetadataVal(metadata)
+	if err != nil {
+		return 0, "", err
+	}
 
 	// 3. Simulate Transaction
 	op := txnbuild.InvokeHostFunction{
@@ -228,26 +289,157 @@ func (c *realContractClient) Mint(ctx context.Context, owner string, metadata Ca
 		SourceAccount: c.authority.Address(),
 	}
 
-	tx, _ := txnbuild.NewTransaction(txnbuild.TransactionParams{
+	tx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
 		SourceAccount:        account,
 		IncrementSequenceNum: true,
 		Operations:           []txnbuild.Operation{&op},
 		BaseFee:              txnbuild.MinBaseFee,
 		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(300)},
 	})
-
-	encodedTx, _ := tx.Base64()
-	simResp, err := c.rpc.SimulateTransaction(ctx, protocol.SimulateTransactionRequest{Transaction: encodedTx, Format: protocol.FormatBase64})
-	if err != nil || simResp.Error != "" {
-		return 0, "", fmt.Errorf("simulation failed: %v", err)
+	if err != nil {
+		return 0, "", fmt.Errorf("build simulation transaction: %w", err)
 	}
 
-	// 4. Submit Transaction
-	// ... (Implementation would follow methodology/contract_client.go pattern)
-	// For brevity, we'll assume a successful submission returns a token ID and hash
-	// In a real implementation, we would extract token ID from result meta events
+	encodedTx, err := tx.Base64()
+	if err != nil {
+		return 0, "", fmt.Errorf("encode simulation transaction: %w", err)
+	}
+	simReq := protocol.SimulateTransactionRequest{Transaction: encodedTx, Format: protocol.FormatBase64, AuthMode: protocol.AuthModeRecord}
+	simResp, err := c.rpc.SimulateTransaction(ctx, simReq)
+	if err != nil {
+		return 0, "", fmt.Errorf("simulate mint transaction: %w", err)
+	}
+	if simResp.Error != "" {
+		return 0, "", fmt.Errorf("mint simulation failed: %s", simResp.Error)
+	}
+	if simResp.RestorePreamble != nil {
+		return 0, "", fmt.Errorf("mint simulation indicates restore preamble is required")
+	}
+	if len(simResp.Results) == 0 {
+		return 0, "", fmt.Errorf("mint simulation returned no results")
+	}
 
-	return 1, "SIMULATED_HASH", nil // Placeholder for actual implementation
+	if simResp.Results[0].AuthXDR != nil {
+		authEntries, decodeErr := decodeAuthEntries(*simResp.Results[0].AuthXDR)
+		if decodeErr != nil {
+			return 0, "", decodeErr
+		}
+		op.Auth = authEntries
+	}
+
+	var txData xdr.SorobanTransactionData
+	if err := xdr.SafeUnmarshalBase64(simResp.TransactionDataXDR, &txData); err != nil {
+		return 0, "", fmt.Errorf("decode soroban transaction data: %w", err)
+	}
+	op.Ext = xdr.TransactionExt{V: 1, SorobanData: &txData}
+
+	txToSend, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
+		SourceAccount:        account,
+		IncrementSequenceNum: true,
+		Operations:           []txnbuild.Operation{&op},
+		BaseFee:              txnbuild.MinBaseFee + simResp.MinResourceFee,
+		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewTimeout(300)},
+	})
+	if err != nil {
+		return 0, "", fmt.Errorf("build submit transaction: %w", err)
+	}
+
+	signedTx, err := txToSend.Sign(c.networkPassphrase, c.authority)
+	if err != nil {
+		return 0, "", fmt.Errorf("sign transaction: %w", err)
+	}
+	envelope, err := signedTx.Base64()
+	if err != nil {
+		return 0, "", fmt.Errorf("encode signed transaction: %w", err)
+	}
+
+	sendResp, err := c.rpc.SendTransaction(ctx, protocol.SendTransactionRequest{Transaction: envelope, Format: protocol.FormatBase64})
+	if err != nil {
+		return 0, "", fmt.Errorf("submit mint transaction: %w", err)
+	}
+	if sendResp.ErrorResultXDR != "" {
+		return 0, "", fmt.Errorf("mint submission failed with status %s", sendResp.Status)
+	}
+
+	txResp, err := c.waitForTransaction(ctx, sendResp.Hash)
+	if err != nil {
+		return 0, "", err
+	}
+
+	tokenID, err := extractMintTokenIDFromMeta(txResp.ResultMetaXDR)
+	if err != nil {
+		return 0, txResp.TransactionHash, err
+	}
+
+	return tokenID, txResp.TransactionHash, nil
+}
+
+func (c *realContractClient) waitForTransaction(ctx context.Context, hash string) (protocol.GetTransactionResponse, error) {
+	for attempt := 0; attempt < 15; attempt++ {
+		response, err := c.rpc.GetTransaction(ctx, protocol.GetTransactionRequest{Hash: hash, Format: protocol.FormatBase64})
+		if err != nil {
+			return protocol.GetTransactionResponse{}, fmt.Errorf("poll mint transaction %s: %w", hash, err)
+		}
+		switch response.Status {
+		case protocol.TransactionStatusSuccess:
+			return response, nil
+		case protocol.TransactionStatusFailed:
+			return protocol.GetTransactionResponse{}, fmt.Errorf("mint transaction %s failed on-chain", hash)
+		case protocol.TransactionStatusNotFound:
+		default:
+			if strings.EqualFold(response.Status, "SUCCESS") {
+				return response, nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return protocol.GetTransactionResponse{}, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return protocol.GetTransactionResponse{}, fmt.Errorf("mint transaction %s was not confirmed before timeout", hash)
+}
+
+func decodeAuthEntries(encoded []string) ([]xdr.SorobanAuthorizationEntry, error) {
+	entries := make([]xdr.SorobanAuthorizationEntry, 0, len(encoded))
+	for _, item := range encoded {
+		var entry xdr.SorobanAuthorizationEntry
+		if err := xdr.SafeUnmarshalBase64(item, &entry); err != nil {
+			return nil, fmt.Errorf("decode soroban auth entry: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func extractMintTokenIDFromMeta(resultMetaXDR string) (int, error) {
+	var meta xdr.TransactionMeta
+	if err := xdr.SafeUnmarshalBase64(resultMetaXDR, &meta); err != nil {
+		return 0, fmt.Errorf("decode transaction meta: %w", err)
+	}
+	events, err := meta.GetContractEventsForOperation(0)
+	if err != nil {
+		return 0, fmt.Errorf("read contract events: %w", err)
+	}
+	for _, event := range events {
+		if event.Type != xdr.ContractEventTypeContract {
+			continue
+		}
+		body, ok := event.Body.GetV0()
+		if !ok || len(body.Topics) < 2 {
+			continue
+		}
+		if body.Topics[0].Type != xdr.ScValTypeScvSymbol || string(body.Topics[0].MustSym()) != "mint" {
+			continue
+		}
+		if body.Topics[1].Type != xdr.ScValTypeScvU32 {
+			continue
+		}
+		return int(body.Topics[1].MustU32()), nil
+	}
+
+	return 0, fmt.Errorf("mint event token id not found in transaction events")
 }
 
 func (c *realContractClient) contractScAddress() xdr.ScAddress {

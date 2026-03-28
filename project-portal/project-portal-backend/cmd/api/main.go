@@ -21,6 +21,7 @@ import (
 	"carbon-scribe/project-portal/project-portal-backend/internal/geospatial"
 	"carbon-scribe/project-portal/project-portal-backend/internal/health"
 	"carbon-scribe/project-portal/project-portal-backend/internal/integration"
+	integrationstellar "carbon-scribe/project-portal/project-portal-backend/internal/integration/stellar"
 	"carbon-scribe/project-portal/project-portal-backend/internal/project"
 	"carbon-scribe/project-portal/project-portal-backend/internal/project/methodology"
 	"carbon-scribe/project-portal/project-portal-backend/internal/reports"
@@ -100,10 +101,14 @@ func main() {
 
 	projectRepo := project.NewRepository(db)
 	methodologyRepo := methodology.NewRepository(db)
+	methodologyCapRepo := methodology.NewCapRepository(db)
 	methodologyService := methodology.NewService(methodologyRepo, methodology.NewContractClientFromEnv())
-	methodologyHandler := methodology.NewHandler(methodologyService)
+	methodologyCapClient := integrationstellar.NewMethodologyClientFromEnv()
+	methodologyCapService := methodology.NewCapEnforcementService(methodologyCapRepo, methodologyRepo, methodologyCapClient)
+	methodologyHandler := methodology.NewHandler(methodologyService, methodologyCapService)
 
-	mintingService := minting.NewService(db, nil)
+	mintingCapValidator := minting.NewCapValidator(methodologyCapService)
+	mintingService := minting.NewService(db, nil, mintingCapValidator)
 	mintingHandler := minting.NewHandler(mintingService)
 
 	projectService := project.NewService(projectRepo, methodologyService, mintingService)
@@ -154,7 +159,7 @@ func main() {
 	geospatialService := geospatial.NewService(geospatialRepo)
 	geospatialHandler := geospatial.NewHandler(geospatialService)
 	financingRepo := financing.NewRepository(db)
-	financingService := financing.NewService(financingRepo, methodologyService)
+	financingService := financing.NewService(financingRepo, methodologyService, methodologyCapService)
 	financingHandler := financing.NewHandler(financingService)
 	settingsRepo := settings.NewRepository(db)
 	settingsService, err := settings.NewService(settingsRepo, settings.Config{
@@ -408,6 +413,9 @@ func runAllMigrations(db *gorm.DB) error {
 		&financing.RevenueDistribution{},
 		&financing.PaymentTransaction{},
 		&financing.CreditPricingModel{},
+		&methodology.MethodologyCap{},
+		&methodology.MintingAttempt{},
+		&methodology.CapConfigurationSource{},
 	)
 
 	if err != nil {
