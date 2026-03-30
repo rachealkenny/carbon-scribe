@@ -36,6 +36,7 @@ model Company {
   credits                 Credit[]
   ipfsDocuments           IpfsDocument[]
   transactionConfirmations TransactionConfirmation[]
+  auditEvents             AuditEvent[]
   
   materialityAssessments MaterialityAssessment[]
   esrsDisclosures        EsrsDisclosure[]
@@ -331,6 +332,7 @@ model User {
   wonAuctions         Auction[]
   retirementSchedules RetirementSchedule[]
   auditLogs           AuditLog[]
+  auditEvents         AuditEvent[]
   orders              Order[]
 
   @@unique([companyId, email])
@@ -455,6 +457,36 @@ model AuditLog {
   @@index([eventType])
   @@index([timestamp])
   @@index([severity])
+}
+
+model AuditEvent {
+  id              String   @id @default(cuid())
+  companyId       String   @map("company_id")
+  company         Company  @relation(fields: [companyId], references: [id])
+  userId          String   @map("user_id")
+  user            User     @relation(fields: [userId], references: [id])
+  eventType       String   @map("event_type")
+  action          String
+  entityType      String   @map("entity_type")
+  entityId        String   @map("entity_id")
+  previousState   Json?    @map("previous_state")
+  newState        Json?    @map("new_state")
+  metadata        Json
+  hash            String
+  previousHash    String   @map("previous_hash")
+  blockNumber     Int?     @map("block_number")
+  transactionHash String?  @map("transaction_hash")
+  timestamp       DateTime @default(now())
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([hash])
+  @@index([companyId])
+  @@index([userId])
+  @@index([eventType])
+  @@index([entityType, entityId])
+  @@index([timestamp])
+  @@map("audit_events")
 }
 
 model Auction {
