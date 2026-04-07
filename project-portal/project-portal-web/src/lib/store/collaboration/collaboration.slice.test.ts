@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { CollaborationSlice } from './collaboration.types';
+import type { CollaborationSlice, ProjectInvitation, ActivityLog } from './collaboration.types';
 import { createCollaborationSlice } from './collaborationSlice';
 import * as api from './collaboration.api';
 
@@ -37,7 +37,7 @@ describe('CollaborationSlice', () => {
         Object.assign(slice, update);
       }
     });
-    slice = createCollaborationSlice(mockSet, () => slice);
+    slice = createCollaborationSlice(mockSet, () => slice, {} as any);
   });
 
   describe('Initial State', () => {
@@ -109,7 +109,7 @@ describe('CollaborationSlice', () => {
 
   describe('fetchInvitations', () => {
     it('should fetch invitations successfully', async () => {
-      const mockInvitations = [
+      const mockInvitations: ProjectInvitation[] = [
         { id: '1', project_id: 'p1', email: 'test@example.com', role: 'Contributor', status: 'pending', expires_at: '2023-01-01T00:00:00Z', created_at: '2023-01-01T00:00:00Z', updated_at: '2023-01-01T00:00:00Z' },
       ];
       mockApi.fetchInvitationsApi.mockResolvedValue(mockInvitations);
@@ -146,7 +146,7 @@ describe('CollaborationSlice', () => {
     });
 
     it('should fetch activities with custom pagination', async () => {
-      const mockActivities = [];
+      const mockActivities: ActivityLog[] = [];
       mockApi.fetchActivitiesApi.mockResolvedValue(mockActivities);
 
       await slice.fetchActivities('p1', 10, 5);
@@ -167,7 +167,7 @@ describe('CollaborationSlice', () => {
 
   describe('inviteUser', () => {
     it('should invite user successfully', async () => {
-      const mockInvitation = { id: '1', project_id: 'p1', email: 'test@example.com', role: 'Contributor', status: 'pending', expires_at: '2023-01-01T00:00:00Z', created_at: '2023-01-01T00:00:00Z', updated_at: '2023-01-01T00:00:00Z' };
+      const mockInvitation = { id: '1', project_id: 'p1', email: 'test@example.com', role: 'Contributor', status: 'pending' as const, expires_at: '2023-01-01T00:00:00Z', created_at: '2023-01-01T00:00:00Z', updated_at: '2023-01-01T00:00:00Z' };
       mockApi.inviteUserApi.mockResolvedValue(mockInvitation);
 
       const result = await slice.inviteUser('p1', { email: 'test@example.com', role: 'Contributor' });
@@ -190,7 +190,7 @@ describe('CollaborationSlice', () => {
 
   describe('removeMember', () => {
     it('should remove member successfully', async () => {
-      mockApi.removeMemberApi.mockResolvedValue(true);
+      mockApi.removeMemberApi.mockResolvedValue(undefined);
 
       const result = await slice.removeMember('p1', 'user123');
 

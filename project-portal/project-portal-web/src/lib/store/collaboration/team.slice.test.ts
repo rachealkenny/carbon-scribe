@@ -37,7 +37,7 @@ describe('TeamSlice', () => {
         Object.assign(slice, update);
       }
     });
-    slice = createCollaborationSlice(mockSet, () => slice);
+    slice = createCollaborationSlice(mockSet, () => slice, {} as any);
   });
 
   describe('Team-Specific Member Management', () => {
@@ -355,8 +355,13 @@ describe('TeamSlice', () => {
       const mockUpdatedTask = {
         id: 'task-1',
         project_id: 'team-project-1',
+        created_by: 'manager-123',
         title: 'Updated task title',
+        description: 'Updated task description',
         status: 'done' as const,
+        priority: 'medium' as const,
+        time_logged: 0,
+        created_at: '2023-01-01T00:00:00Z',
         updated_at: '2023-01-03T00:00:00Z',
       };
       mockApi.updateTaskApi.mockResolvedValue(mockUpdatedTask);
@@ -455,6 +460,7 @@ describe('TeamSlice', () => {
           content: 'Great work on the project setup!',
           mentions: ['user-456'],
           attachments: [],
+          is_resolved: false,
           created_at: '2023-01-01T00:00:00Z',
           updated_at: '2023-01-01T00:00:00Z',
         },
@@ -465,6 +471,7 @@ describe('TeamSlice', () => {
           content: 'Thanks! Looking forward to collaborating.',
           mentions: [],
           attachments: [],
+          is_resolved: false,
           created_at: '2023-01-02T00:00:00Z',
           updated_at: '2023-01-02T00:00:00Z',
         },
@@ -489,6 +496,7 @@ describe('TeamSlice', () => {
         content: '@user-456 can you review this?',
         mentions: ['user-456'],
         attachments: [],
+        is_resolved: false,
         created_at: '2023-01-01T00:00:00Z',
         updated_at: '2023-01-01T00:00:00Z',
       };
@@ -513,7 +521,7 @@ describe('TeamSlice', () => {
 
   describe('Team Member Removal', () => {
     it('should remove team member successfully', async () => {
-      mockApi.removeMemberApi.mockResolvedValue(true);
+      mockApi.removeMemberApi.mockResolvedValue(undefined);
 
       const result = await slice.removeMember('team-project-1', 'member-123');
 
