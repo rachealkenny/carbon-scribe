@@ -20,4 +20,9 @@ export class StellarController {
   async getTransferStatus(@Param('id') purchaseId: string) {
     return this.transferService.getTransferStatus(purchaseId);
   }
+
+  @Get('stellar/purchases/:id/transfer-status')
+  async getStellarTransferStatus(@Param('id') purchaseId: string) {
+    return this.transferService.getTransferStatus(purchaseId);
+  }
 }

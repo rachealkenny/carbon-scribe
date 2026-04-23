@@ -345,7 +345,7 @@ export default function CompliancePage() {
                       <YAxis yAxisId="left" domain={[0, 100]} />
                       <YAxis yAxisId="right" orientation="right" />
                       <Tooltip 
-                        formatter={(value: any, name: string | undefined) => {
+                        formatter={(value: any, name: any) => {
                           if (name === 'compliance') return [`${value}%`, 'Compliance Score']
                           return [value, 'Reports Submitted']
                         }}

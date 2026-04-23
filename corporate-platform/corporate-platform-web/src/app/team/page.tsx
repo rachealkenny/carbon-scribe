@@ -601,7 +601,7 @@ export default function TeamPage() {
                   <XAxis dataKey="month" />
                   <YAxis />
                   <Tooltip 
-                    formatter={(value: any, name: string | undefined) => {
+                    formatter={(value: any, name: any) => {
                       if (name === 'retirements') return [`${value.toLocaleString()} tCO₂`, 'Retirements']
                       if (name === 'purchases') return [`${value.toLocaleString()} tCO₂`, 'Purchases']
                       return [value, 'Reports Generated']

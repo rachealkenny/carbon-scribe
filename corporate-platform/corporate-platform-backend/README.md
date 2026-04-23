@@ -258,6 +258,44 @@ corporate-platform-backend/
 ├── package.json
 ├── prisma.config.js
 ├── tsconfig.json
+
+## Stellar Transfer API (Frontend Integration)
+
+The backend exposes transfer endpoints used by the corporate web client:
+
+- `POST /api/v1/stellar/transfers`
+- `POST /api/v1/stellar/transfers/batch`
+- `GET /api/v1/stellar/purchases/:id/transfer-status`
+
+Compatibility note:
+
+- `GET /api/v1/purchases/:id/transfer-status` remains available for legacy clients.
+
+Single transfer request body:
+
+- `purchaseId`: string
+- `companyId`: string
+- `projectId`: string
+- `amount`: number (minimum `1`)
+- `contractId`: string
+- `fromAddress`: string
+- `toAddress`: string
+
+Batch request body:
+
+- `transfers`: `InitiateTransferDto[]`
+
+Transfer status response fields can include:
+
+- `id`
+- `purchaseId`
+- `companyId`
+- `projectId`
+- `amount`
+- `status` (`PENDING`, `CONFIRMED`, `FAILED`)
+- `transactionHash`
+- `errorMessage`
+- `confirmedAt`
 └── README.md
 ```
 ---
