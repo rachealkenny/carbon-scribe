@@ -24,7 +24,8 @@ type FakeCollaborationRepo struct {
 	Comments    []Comment
 	Tasks       []Task
 	Resources   []SharedResource
-}
+	Members     []EnrichedProjectMember // <-- add this for test control
+	}
 
 	// GetEnrichedMember returns a fake enriched member for testing
 	func (f *FakeCollaborationRepo) GetEnrichedMember(ctx context.Context, projectID, userID string) (*EnrichedProjectMember, error) {
@@ -71,36 +72,12 @@ func (f *FakeCollaborationRepo) GetMember(ctx context.Context, projectID, userID
 }
 
 func (f *FakeCollaborationRepo) ListMembers(ctx context.Context, projectID string) ([]EnrichedProjectMember, error) {
-	return []EnrichedProjectMember{
-		{
-			ID:        "fake-id",
-			ProjectID: projectID,
-			UserID:    "user-1",
-			Role:      "owner",
-			JoinedAt:  time.Now(),
-			DisplayName: "Fake User 1",
-			Email:     "user1@example.com",
-			AvatarURL: "https://example.com/avatar1.png",
-			Phone:     "1234567890",
-			Location:  "Test City",
-			Title:     "Engineer",
-			Bio:       "Test bio 1",
-		},
-		{
-			ID:        "fake-id-2",
-			ProjectID: projectID,
-			UserID:    "user-2",
-			Role:      "contributor",
-			JoinedAt:  time.Now(),
-			DisplayName: "Fake User 2",
-			Email:     "user2@example.com",
-			AvatarURL: "https://example.com/avatar2.png",
-			Phone:     "0987654321",
-			Location:  "Test City 2",
-			Title:     "Designer",
-			Bio:       "Test bio 2",
-		},
-	}, nil
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if f.Members != nil {
+		return f.Members, nil
+	}
+	return []EnrichedProjectMember{}, nil
 }
 
 func (f *FakeCollaborationRepo) UpdateMember(ctx context.Context, member *ProjectMember) error {
